@@ -1,14 +1,13 @@
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEScan.h>
-#include <M5Unified.h>
+#include <M5StickCPlus.h>
 
-// =====================================================
+// ====================================================
 // Environmental BLE Listener / Scanner
 // - listens to BLE advertisements from nearby env nodes
 // - no connection required
-// - easy match to simple mobile-scanner workflow
-// =====================================================
+// ====================================================
 
 #define TARGET_DEVICE_NAME  "ENV-NODE-01"
 #define SCAN_TIME_SECONDS   5
@@ -45,8 +44,8 @@ bool splitPayload(const String& payload, String parts[], int expectedParts) {
 }
 
 void updateDisplay() {
-  M5.Lcd.fillRect(0, 20, 160, 100, BLACK);
-  M5.Lcd.setCursor(0, 20, 2);
+  M5.Lcd.fillRect(0, 20, 240, 120, BLACK);
+  M5.Lcd.setCursor(0, 20);
   M5.Lcd.printf("Node : %s\n", latestNode.c_str());
   M5.Lcd.printf("Alert: %s\n", latestAlert.c_str());
   M5.Lcd.printf("Temp : %s C\n", latestTemp.c_str());
@@ -57,13 +56,13 @@ void updateDisplay() {
 
 class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
-    std::string devName = advertisedDevice.getName();
+    String devName = advertisedDevice.getName();
 
-    if (devName.empty()) {
+    if (devName.length() == 0) {
       return;
     }
 
-    if (String(devName.c_str()) != TARGET_DEVICE_NAME) {
+    if (devName != TARGET_DEVICE_NAME) {
       return;
     }
 
@@ -78,14 +77,15 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
       return;
     }
 
-    std::string mfg = advertisedDevice.getManufacturerData();
+    String mfg = advertisedDevice.getManufacturerData();
     if (mfg.length() < 3) {
       Serial.println("Manufacturer data too short.");
       return;
     }
 
     // Drop first 2 bytes = manufacturer ID
-    String payload = String(mfg.substr(2).c_str());
+    String payload = mfg.substring(2);
+
     Serial.print("Payload: ");
     Serial.println(payload);
 
@@ -125,7 +125,9 @@ void setup() {
   M5.begin();
   M5.Lcd.setRotation(3);
   M5.Lcd.fillScreen(BLACK);
-  M5.Lcd.setCursor(0, 0, 2);
+  M5.Lcd.setTextColor(WHITE, BLACK);
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setCursor(0, 0);
   M5.Lcd.println("Env BLE Listener");
 
   BLEDevice::init("");
@@ -147,7 +149,7 @@ void loop() {
     startScan();
   }
 
-  // Restart scanning periodically so it keeps listening continuously
+  // Restart scanning periodically
   if (millis() - lastScanStart > (SCAN_TIME_SECONDS * 1000UL + 1000UL)) {
     startScan();
   }
