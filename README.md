@@ -202,10 +202,18 @@ Example:
 }
 ```
 
-MQTT topic used:
+MQTT topic used (All to use the same TOKEN):
+
+
 
 ```
-/v1.6/devices/m5stackcplus
+Shafiq /v1.6/devices/m5stackcplus_gateway/heartbeat_2
+Natalie /v1.6/devices/m5stackcplus_gateway/heartbeat_3
+Yan Hyee /v1.6/devices/m5stackcplus_gateway/heartbeat_4
+Koel /v1.6/devices/m5stackcplus_gateway/heartbeat_5
+
+Natalie /v1.6/devices/m5stackcplus_gateway/smokesensor_3
+Yan Hyee /v1.6/devices/m5stackcplus_gateway/smokesensor_4
 ```
 
 ---
