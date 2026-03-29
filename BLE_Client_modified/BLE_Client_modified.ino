@@ -3,31 +3,19 @@
 #include <BLEScan.h>
 #include <M5StickCPlus.h>
 
-// ====================================================
-// Environmental BLE Listener / Scanner
-// - listens to BLE advertisements from nearby env nodes
-// - no connection required
-// ====================================================
-
-#define TARGET_DEVICE_NAME  "ENV-NODE-01"
-#define SCAN_TIME_SECONDS   5
+#define TARGET_DEVICE_NAME "ENV-NODE-01"
+#define SCAN_TIME_SECONDS 5
+#define DATA_TIMEOUT 7000
 
 BLEScan* pBLEScan = nullptr;
 unsigned long lastScanStart = 0;
+unsigned long lastDataReceived = 0;
 
 String latestNode = "-";
-String latestAlert = "-";
-String latestTemp = "-";
-String latestHum = "-";
-String latestAqi = "-";
+String latestRaw = "-";
+String latestVoltage = "-";
+String latestStatus = "NO DATA";
 int latestRssi = -999;
-
-String alertLabelFromLevel(const String& levelStr) {
-  if (levelStr == "0") return "SAFE";
-  if (levelStr == "1") return "CAUTION";
-  if (levelStr == "2") return "HAZARD";
-  return "UNKNOWN";
-}
 
 bool splitPayload(const String& payload, String parts[], int expectedParts) {
   int start = 0;
@@ -39,34 +27,41 @@ bool splitPayload(const String& payload, String parts[], int expectedParts) {
     parts[index++] = payload.substring(start, sep);
     start = sep + 1;
   }
+
   parts[index] = payload.substring(start);
   return index == expectedParts - 1;
+}
+
+void resetLatestValues() {
+  latestNode = "-";
+  latestRaw = "-";
+  latestVoltage = "-";
+  latestRssi = -999;
 }
 
 void updateDisplay() {
   M5.Lcd.fillRect(0, 20, 240, 120, BLACK);
   M5.Lcd.setCursor(0, 20);
   M5.Lcd.printf("Node : %s\n", latestNode.c_str());
-  M5.Lcd.printf("Alert: %s\n", latestAlert.c_str());
-  M5.Lcd.printf("Temp : %s C\n", latestTemp.c_str());
-  M5.Lcd.printf("Hum  : %s %%\n", latestHum.c_str());
-  M5.Lcd.printf("AQI  : %s\n", latestAqi.c_str());
-  M5.Lcd.printf("RSSI : %d dBm\n", latestRssi);
+  M5.Lcd.printf("Raw  : %s\n", latestRaw.c_str());
+  M5.Lcd.printf("Volt : %s V\n", latestVoltage.c_str());
+  M5.Lcd.printf("Stat : %s\n", latestStatus.c_str());
+
+  if (latestRssi != -999) {
+    M5.Lcd.printf("RSSI : %d dBm\n", latestRssi);
+  } else {
+    M5.Lcd.printf("RSSI : ---\n");
+  }
 }
 
 class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice advertisedDevice) override {
-    String devName = advertisedDevice.getName();
+    String devName = advertisedDevice.getName().c_str();
 
-    if (devName.length() == 0) {
-      return;
-    }
+    if (devName.length() == 0) return;
+    if (devName != TARGET_DEVICE_NAME) return;
 
-    if (devName != TARGET_DEVICE_NAME) {
-      return;
-    }
-
-    Serial.println("\nTarget environmental node found.");
+    Serial.println("\nTarget smoke node found.");
     Serial.print("RSSI: ");
     Serial.println(advertisedDevice.getRSSI());
 
@@ -74,38 +69,61 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
 
     if (!advertisedDevice.haveManufacturerData()) {
       Serial.println("No manufacturer data found.");
+      latestStatus = "NO PAYLOAD";
+      resetLatestValues();
+      updateDisplay();
       return;
     }
 
-    String mfg = advertisedDevice.getManufacturerData();
+    String mfgStd = advertisedDevice.getManufacturerData();
+    String mfg = String(mfgStd.c_str());
+
     if (mfg.length() < 3) {
       Serial.println("Manufacturer data too short.");
+      latestStatus = "BAD DATA";
+      resetLatestValues();
+      updateDisplay();
       return;
     }
 
-    // Drop first 2 bytes = manufacturer ID
+    // first 2 bytes are manufacturer ID
     String payload = mfg.substring(2);
 
     Serial.print("Payload: ");
     Serial.println(payload);
 
-    String parts[6];
-    if (!splitPayload(payload, parts, 6)) {
+    String parts[5];
+    if (!splitPayload(payload, parts, 5)) {
       Serial.println("Payload parse failed.");
+      latestStatus = "PARSE ERR";
+      resetLatestValues();
+      updateDisplay();
       return;
     }
 
-    // Expected: ENV|node|level|temp|humidity|aqi
-    if (parts[0] != "ENV") {
+    // Expected: SMK|node|raw|voltage|status
+    if (parts[0] != "SMK") {
       Serial.println("Unexpected payload prefix.");
+      latestStatus = "BAD PREFIX";
+      resetLatestValues();
+      updateDisplay();
       return;
     }
 
+    lastDataReceived = millis();
     latestNode = parts[1];
-    latestAlert = alertLabelFromLevel(parts[2]);
-    latestTemp = parts[3];
-    latestHum = parts[4];
-    latestAqi = parts[5];
+
+    if (parts[2] == "ERR" || parts[3] == "ERR" || parts[4] == "ERROR") {
+      latestRaw = "-";
+      latestVoltage = "-";
+      latestStatus = "SENSOR ERR";
+      updateDisplay();
+      return;
+    }
+
+    latestRaw = parts[2];
+    latestVoltage = parts[3];
+    latestStatus = parts[4];
 
     updateDisplay();
   }
@@ -128,7 +146,7 @@ void setup() {
   M5.Lcd.setTextColor(WHITE, BLACK);
   M5.Lcd.setTextSize(2);
   M5.Lcd.setCursor(0, 0);
-  M5.Lcd.println("Env BLE Listener");
+  M5.Lcd.println("Smoke BLE Client");
 
   BLEDevice::init("");
   pBLEScan = BLEDevice::getScan();
@@ -144,14 +162,17 @@ void setup() {
 void loop() {
   M5.update();
 
-  // Button A = restart scan manually
   if (M5.BtnA.wasPressed()) {
     startScan();
   }
 
-  // Restart scanning periodically
   if (millis() - lastScanStart > (SCAN_TIME_SECONDS * 1000UL + 1000UL)) {
     startScan();
+  }
+
+  if (lastDataReceived != 0 && millis() - lastDataReceived > DATA_TIMEOUT) {
+    latestStatus = "NO SIGNAL";
+    updateDisplay();
   }
 
   delay(50);

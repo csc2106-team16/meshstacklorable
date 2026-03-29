@@ -4,48 +4,65 @@
 #include <BLEAdvertising.h>
 #include <M5StickCPlus.h>
 
-// ====================================================
-// Environmental BLE Broadcaster / Server
-// - broadcasts environmental data in manufacturer data
-// - no client connection required
-// ====================================================
-
 #define BLE_DEVICE_NAME "ENV-NODE-01"
-
-// Fake sample values for testing
-int nodeId = 1;
-int alertLevel = 1;     // 0 = SAFE, 1 = CAUTION, 2 = HAZARD
-float temperature = 29.5;
-float humidity = 67.2;
-int aqi = 84;
+#define MQ2_PIN 26
+#define SMOKE_THRESHOLD 400
+#define SAMPLE_INTERVAL_MS 2000
 
 BLEAdvertising* pAdvertising = nullptr;
 unsigned long lastBroadcastMs = 0;
-const unsigned long BROADCAST_INTERVAL_MS = 2000;
 
-// Manufacturer ID bytes (arbitrary test values)
+int nodeId = 1;
+int rawValue = 0;
+float voltage = 0.0;
+bool smokeDetected = false;
+bool sensorValid = false;
+
+// Manufacturer ID bytes
 const uint8_t MANUFACTURER_ID_LOW  = 0xFF;
 const uint8_t MANUFACTURER_ID_HIGH = 0xFF;
 
-String alertLabel(int level) {
-  if (level == 0) return "SAFE";
-  if (level == 1) return "CAUTION";
-  if (level == 2) return "HAZARD";
-  return "UNKNOWN";
+String smokeLabel(bool detected) {
+  return detected ? "ALERT" : "CLEAR";
+}
+
+void readSensorData() {
+  rawValue = analogRead(MQ2_PIN);
+
+  // Simple sensor validity check
+  // If disconnected, ADC may read 0, max, or unstable bad values.
+  if (rawValue <= 5 || rawValue >= 1018) {
+    sensorValid = false;
+    voltage = 0.0;
+    smokeDetected = false;
+    return;
+  }
+
+  sensorValid = true;
+
+  // M5StickC Plus / ESP32 is usually 3.3V logic
+  voltage = rawValue * (3.3 / 1023.0);
+  smokeDetected = (rawValue >= SMOKE_THRESHOLD);
 }
 
 String buildPayload() {
-  // Format: ENV|node|level|temp|humidity|aqi
-  String payload = "ENV|";
+  // Format:
+  // Normal: SMK|node|raw|voltage|status
+  // Error : SMK|node|ERR|ERR|ERROR
+  String payload = "SMK|";
   payload += String(nodeId);
   payload += "|";
-  payload += String(alertLevel);
+
+  if (!sensorValid) {
+    payload += "ERR|ERR|ERROR";
+    return payload;
+  }
+
+  payload += String(rawValue);
   payload += "|";
-  payload += String(temperature, 1);
+  payload += String(voltage, 2);
   payload += "|";
-  payload += String(humidity, 1);
-  payload += "|";
-  payload += String(aqi);
+  payload += smokeLabel(smokeDetected);
 
   return payload;
 }
@@ -54,10 +71,16 @@ void updateDisplay() {
   M5.Lcd.fillRect(0, 20, 240, 120, BLACK);
   M5.Lcd.setCursor(0, 20);
   M5.Lcd.printf("Node : %d\n", nodeId);
-  M5.Lcd.printf("Alert: %s\n", alertLabel(alertLevel).c_str());
-  M5.Lcd.printf("Temp : %.1f C\n", temperature);
-  M5.Lcd.printf("Hum  : %.1f %%\n", humidity);
-  M5.Lcd.printf("AQI  : %d\n", aqi);
+
+  if (!sensorValid) {
+    M5.Lcd.println("Sensor ERROR");
+    M5.Lcd.println("Check wiring");
+    return;
+  }
+
+  M5.Lcd.printf("Raw  : %d\n", rawValue);
+  M5.Lcd.printf("Volt : %.2f V\n", voltage);
+  M5.Lcd.printf("Stat : %s\n", smokeLabel(smokeDetected).c_str());
 }
 
 void updateAdvertisingPayload(const String& dataPayload) {
@@ -72,7 +95,6 @@ void updateAdvertisingPayload(const String& dataPayload) {
   advData.setFlags(0x06);
   advData.setManufacturerData(String(manufacturerData.c_str()));
 
-  // Put device name in scan response to save advertisement space
   scanResponse.setName(BLE_DEVICE_NAME);
 
   pAdvertising->stop();
@@ -94,14 +116,17 @@ void setup() {
   M5.Lcd.setTextColor(WHITE, BLACK);
   M5.Lcd.setTextSize(2);
   M5.Lcd.setCursor(0, 0);
-  M5.Lcd.println("Env BLE Server");
+  M5.Lcd.println("Smoke BLE Server");
+
+  pinMode(MQ2_PIN, INPUT);
 
   BLEDevice::init(BLE_DEVICE_NAME);
   BLEServer* pServer = BLEDevice::createServer();
-  (void)pServer;  // not used directly, but keeps BLE server initialized
+  (void)pServer;
 
   pAdvertising = BLEDevice::getAdvertising();
 
+  readSensorData();
   updateDisplay();
   updateAdvertisingPayload(buildPayload());
   lastBroadcastMs = millis();
@@ -110,25 +135,8 @@ void setup() {
 void loop() {
   M5.update();
 
-  // Button A cycles alert level
-  if (M5.BtnA.wasPressed()) {
-    alertLevel = (alertLevel + 1) % 3;
-    updateDisplay();
-    updateAdvertisingPayload(buildPayload());
-    lastBroadcastMs = millis();
-  }
-
-  // Optional: simulate changing values over time
-  if (millis() - lastBroadcastMs >= BROADCAST_INTERVAL_MS) {
-    temperature += 0.1;
-    if (temperature > 35.0) temperature = 29.5;
-
-    humidity += 0.2;
-    if (humidity > 80.0) humidity = 67.2;
-
-    aqi += 1;
-    if (aqi > 120) aqi = 84;
-
+  if (millis() - lastBroadcastMs >= SAMPLE_INTERVAL_MS) {
+    readSensorData();
     updateDisplay();
     updateAdvertisingPayload(buildPayload());
     lastBroadcastMs = millis();
