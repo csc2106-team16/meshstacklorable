@@ -63,6 +63,20 @@ uint8_t simpleChecksum(const String& input) {
 #define CLEAR_REPEAT_MS     10000 // Re-send ALL CLEAR once after 10s to confirm
 
 // ---------------------------------------------------------------
+// [FAKE DATA] --- Fake sensor injection settings ---
+// Set FAKE_SENSOR_ENABLED to false to revert to real sensor readings.
+// ---------------------------------------------------------------
+#define FAKE_SENSOR_ENABLED   true
+#define FAKE_ALERT_VALUE      700   // Injected value above threshold (400) to trigger ALERT
+#define FAKE_CLEAR_VALUE      100   // Injected value below threshold — returned to after alert
+#define FAKE_CYCLE_MS         30000 // Every 30 seconds, inject one alert spike
+#define FAKE_ALERT_DURATION_MS 5000 // How long the fake alert value lasts (5s)
+
+unsigned long fakeLastCycleTime = 0;
+bool          fakeAlertPhase    = false; // true = currently injecting alert value
+// ---------------------------------------------------------------
+
+// ---------------------------------------------------------------
 // PAYLOAD STRUCTURE — must match all other nodes exactly
 // ---------------------------------------------------------------
 struct Message {
@@ -79,6 +93,8 @@ unsigned long lastTransmitTime = 0;
 
 bool smokeActive  = false;
 bool allClearSent = true;
+
+uint8_t calculateChecksum(Message *msg);
 
 // ---------------------------------------------------------------
 void setup() {
@@ -108,11 +124,60 @@ void setup() {
   Serial.print(F("  LoRa P2P Sender Node Ready. ID: "));
   Serial.println(MY_NODE_ID);
   Serial.println(F("  Alert-only mode: silent when clear."));
+#if FAKE_SENSOR_ENABLED
+  Serial.println(F("  *** FAKE SENSOR MODE ACTIVE ***"));
+  Serial.print(F("  Alert spike every "));
+  Serial.print(FAKE_CYCLE_MS / 1000);
+  Serial.println(F("s, lasting "));
+  Serial.print(FAKE_ALERT_DURATION_MS / 1000);
+  Serial.println(F("s."));
+#endif
   Serial.println(F("============================================"));
 
   // Let M5Stick know this node is ready
   m5Serial.print(F("READY,"));
   m5Serial.println(MY_NODE_ID);
+
+  // [FAKE DATA] Initialise fake cycle timer after setup completes
+  fakeLastCycleTime = millis();
+}
+
+// ---------------------------------------------------------------
+// [FAKE DATA] Returns the raw sensor value to use this tick.
+// If FAKE_SENSOR_ENABLED is false, always reads the real pin.
+// ---------------------------------------------------------------
+int getSmokeSensorValue() {
+#if FAKE_SENSOR_ENABLED
+  unsigned long now = millis();
+  unsigned long elapsed = now - fakeLastCycleTime;
+
+  if (!fakeAlertPhase && elapsed >= FAKE_CYCLE_MS) {
+    // Time to start an alert spike
+    fakeAlertPhase    = true;
+    fakeLastCycleTime = now;
+    Serial.println(F("[FAKE] Injecting ALERT value."));
+    return FAKE_ALERT_VALUE;
+  }
+
+  if (fakeAlertPhase) {
+    if (elapsed < FAKE_ALERT_DURATION_MS) {
+      // Still within the alert window — keep injecting alert value
+      return FAKE_ALERT_VALUE;
+    } else {
+      // Alert window expired — switch back to clear
+      fakeAlertPhase    = false;
+      fakeLastCycleTime = now;
+      Serial.println(F("[FAKE] Alert window ended, returning CLEAR value."));
+      return FAKE_CLEAR_VALUE;
+    }
+  }
+
+  // Normal quiet phase — return clear value
+  return FAKE_CLEAR_VALUE;
+
+#else
+  return analogRead(MQ2_PIN); // Real hardware reading
+#endif
 }
 
 // ---------------------------------------------------------------
@@ -120,7 +185,8 @@ void loop() {
   if (millis() - lastSampleTime >= SAMPLE_INTERVAL_MS) {
     lastSampleTime = millis();
 
-    int  rawValue = analogRead(MQ2_PIN);
+    // [FAKE DATA] Use getSmokeSensorValue() instead of analogRead() directly
+    int  rawValue = getSmokeSensorValue();
     bool smokeNow = (rawValue >= SMOKE_THRESHOLD);
 
     // Always forward current reading to M5Stick
@@ -191,19 +257,18 @@ void sendLoRa(int rawValue, bool isAlert) {
            isAlert ? "ALERT" : "CLEAR");
 
   // [SECURITY ADDED] encrypt payload BEFORE sending
-String originalPayload = String(msg.payload);
-String encryptedPayload = xorCipher(originalPayload);
+  String originalPayload = String(msg.payload);
+  String encryptedPayload = xorCipher(originalPayload);
 
-// [SECURITY ADDED] safe copy with null termination
-strncpy(msg.payload, encryptedPayload.c_str(), sizeof(msg.payload) - 1);
-msg.payload[sizeof(msg.payload) - 1] = '\0';
+  // [SECURITY ADDED] safe copy with null termination
+  strncpy(msg.payload, encryptedPayload.c_str(), sizeof(msg.payload) - 1);
+  msg.payload[sizeof(msg.payload) - 1] = '\0';
 
-// [SECURITY ADDED] recompute checksum AFTER encryption
-msg.checksum = calculateChecksum(&msg);
+  // [SECURITY ADDED] recompute checksum AFTER encryption
+  msg.checksum = calculateChecksum(&msg);
 
-// send as usual (logic unchanged)
-rf95.send((uint8_t*)&msg, sizeof(msg));
-
+  // send as usual (logic unchanged)
+  rf95.send((uint8_t*)&msg, sizeof(msg));
   rf95.waitPacketSent();
 
   Serial.println(F("--- [TX] Transmitted ---"));
