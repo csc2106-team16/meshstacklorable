@@ -1,43 +1,70 @@
+/*
+ * LoRa P2P Node — Smoke Sensor (Alert-Only Mode, with M5StickC Plus UART output)
+ * Hardware: Arduino Uno + Cytron SHIELD-LORA-RFM N1AQ4 + MQ2 Smoke Sensor
+ *
+ * Transmits ONLY on ALERT or CLEAR transitions via LoRa.
+ * Forwards own sensor status to M5StickC Plus via UART at every sample.
+ *
+ * UART Wiring (Arduino → M5StickC Plus):
+ *   Arduino Pin 4 (TX) → M5StickC Plus Grove Port PIN 32 (RX)
+ *   Arduino GND        → M5StickC Plus GND
+ *
+ * Change MY_NODE_ID for each physical sender node before uploading.
+ */
+
 #include <SPI.h>
 #include <RH_RF95.h>
+#include <SoftwareSerial.h>
 
+// ---------------------------------------------------------------
 // NODE IDENTITY — change this for each sender node (1 or 2)
+// ---------------------------------------------------------------
 #define MY_NODE_ID   1
 
+// ---------------------------------------------------------------
 // PIN DEFINITIONS
+// ---------------------------------------------------------------
 #define RFM95_CS    10
 #define RFM95_RST    9
 #define RFM95_INT    2
 #define MQ2_PIN     A0
 
+#define SOFT_TX_PIN  4   // Arduino TX → M5StickC Plus RX (Grove Pin 32)
+#define SOFT_RX_PIN  5   // Unused but required by SoftwareSerial
+
+// ---------------------------------------------------------------
 // RADIO & SENSOR SETTINGS
+// ---------------------------------------------------------------
 #define RF95_FREQ           915.5
 #define TX_POWER            23
 #define SMOKE_THRESHOLD     400   // Tune after calibration
 #define MQ2_WARMUP_MS       30000 // 30s warm-up on boot
-#define SAMPLE_INTERVAL_MS  10000  // Check sensor every 1 second
+#define SAMPLE_INTERVAL_MS  1000  // Check sensor every 1 second
 #define ALERT_REPEAT_MS     5000  // Re-send alert every 5s while smoke persists
 #define CLEAR_REPEAT_MS     10000 // Re-send ALL CLEAR once after 10s to confirm
 
-
+// ---------------------------------------------------------------
 // PAYLOAD STRUCTURE — must match all other nodes exactly
+// ---------------------------------------------------------------
 struct Message {
   uint8_t nodeId;
   char    payload[40];
   uint8_t checksum;
 };
 
-RH_RF95 rf95(RFM95_CS, RFM95_INT);
+RH_RF95        rf95(RFM95_CS, RFM95_INT);
+SoftwareSerial m5Serial(SOFT_RX_PIN, SOFT_TX_PIN); // RX, TX
 
 unsigned long lastSampleTime   = 0;
 unsigned long lastTransmitTime = 0;
 
-// Track state to detect transitions
-bool smokeActive  = false; // Is smoke currently detected?
-bool allClearSent = true;  // Has ALL CLEAR been sent after smoke clears?
+bool smokeActive  = false;
+bool allClearSent = true;
 
+// ---------------------------------------------------------------
 void setup() {
   Serial.begin(9600);
+  m5Serial.begin(9600);
 
   // MQ2 warm-up
   Serial.println(F("MQ2 warming up (30s)..."));
@@ -63,8 +90,13 @@ void setup() {
   Serial.println(MY_NODE_ID);
   Serial.println(F("  Alert-only mode: silent when clear."));
   Serial.println(F("============================================"));
+
+  // Let M5Stick know this node is ready
+  m5Serial.print(F("READY,"));
+  m5Serial.println(MY_NODE_ID);
 }
 
+// ---------------------------------------------------------------
 void loop() {
   if (millis() - lastSampleTime >= SAMPLE_INTERVAL_MS) {
     lastSampleTime = millis();
@@ -72,12 +104,15 @@ void loop() {
     int  rawValue = analogRead(MQ2_PIN);
     bool smokeNow = (rawValue >= SMOKE_THRESHOLD);
 
+    // Always forward current reading to M5Stick
+    sendToM5Stick(rawValue, smokeNow);
+
     // Transition: clear → smoke
     if (smokeNow && !smokeActive) {
       smokeActive  = true;
       allClearSent = false;
       Serial.println(F("!!! SMOKE DETECTED — sending alert !!!"));
-      sendMessage(rawValue, true);
+      sendLoRa(rawValue, true);
       lastTransmitTime = millis();
     }
 
@@ -85,30 +120,30 @@ void loop() {
     else if (smokeNow && smokeActive) {
       if (millis() - lastTransmitTime >= ALERT_REPEAT_MS) {
         Serial.println(F("!!! SMOKE PERSISTS — resending alert !!!"));
-        sendMessage(rawValue, true);
+        sendLoRa(rawValue, true);
         lastTransmitTime = millis();
       }
     }
 
-    // Transition: smoke → clear — send ALL CLEAR immediately
+    // Transition: smoke → clear
     else if (!smokeNow && smokeActive) {
       smokeActive = false;
       Serial.println(F("Smoke cleared — sending ALL CLEAR."));
-      sendMessage(rawValue, false);
+      sendLoRa(rawValue, false);
       lastTransmitTime = millis();
     }
 
-    // Still clear but haven't sent a final ALL CLEAR confirmation yet
+    // Still clear but final ALL CLEAR confirmation not sent yet
     else if (!smokeNow && !smokeActive && !allClearSent) {
       if (millis() - lastTransmitTime >= CLEAR_REPEAT_MS) {
         Serial.println(F("Resending ALL CLEAR confirmation."));
-        sendMessage(rawValue, false);
+        sendLoRa(rawValue, false);
         lastTransmitTime = millis();
-        allClearSent = true; // Done — go silent again
+        allClearSent = true;
       }
     }
 
-    // Truly clear and confirmed — say nothing
+    // Truly clear — no LoRa transmission
     else {
       Serial.print(F("Clear. Raw: "));
       Serial.print(rawValue);
@@ -117,7 +152,10 @@ void loop() {
   }
 }
 
-void sendMessage(int rawValue, bool isAlert) {
+// ---------------------------------------------------------------
+// Send packet over LoRa
+// ---------------------------------------------------------------
+void sendLoRa(int rawValue, bool isAlert) {
   float voltage = rawValue * (5.0 / 1023.0);
 
   Message msg;
@@ -139,16 +177,36 @@ void sendMessage(int rawValue, bool isAlert) {
   rf95.waitPacketSent();
 
   Serial.println(F("--- [TX] Transmitted ---"));
-  Serial.print(F("  Raw ADC     : ")); 
-  Serial.print(rawValue);
-  Serial.println(F(" / 1023"));
-  Serial.print(F("  Voltage     : ")); 
-  Serial.print(voltage, 2);
-  Serial.println(F(" V"));
+  Serial.print(F("  Raw ADC     : ")); Serial.print(rawValue);
+                                        Serial.println(F(" / 1023"));
+  Serial.print(F("  Voltage     : ")); Serial.print(voltage, 2);
+                                        Serial.println(F(" V"));
   Serial.print(F("  Status sent : "));
   Serial.println(isAlert ? "*** SMOKE ALERT ***" : "ALL CLEAR");
 }
 
+// ---------------------------------------------------------------
+// Forward own sensor reading to M5StickC Plus via UART
+// Same format as LoRa payload for consistent parsing on M5Stick
+// ---------------------------------------------------------------
+void sendToM5Stick(int rawValue, bool isAlert) {
+  float voltage = rawValue * (5.0 / 1023.0);
+
+  char voltStr[8];
+  dtostrf(voltage, 4, 2, voltStr);
+
+  char uartStr[40];
+  snprintf(uartStr, sizeof(uartStr),
+           "N%d,R%d,V%s,%s",
+           MY_NODE_ID,
+           rawValue,
+           voltStr,
+           isAlert ? "ALERT" : "CLEAR");
+
+  m5Serial.println(uartStr);
+}
+
+// ---------------------------------------------------------------
 uint8_t calculateChecksum(Message *msg) {
   uint8_t checksum = 0;
   checksum ^= msg->nodeId;
