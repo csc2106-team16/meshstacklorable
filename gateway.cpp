@@ -1,8 +1,8 @@
 #include "gateway.h"
 #include <Arduino.h>
 
-// Single definition of shared clients — declared extern in gateway.h
-WiFiClient  espClient;
+// [SECURITY ADDED] Secure MQTT client over TLS
+WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
 #define TOKEN        "BBUS-Vzhx7378QAwzAIw3wyaYi5UAS5rN5h"
@@ -14,6 +14,16 @@ const  long          reconnInterval    = 5000;
 
 static char payload[150];
 static char topic_pub[100];
+
+// [SECURITY ADDED]
+// Initialize TLS security for MQTT communication.
+// For prototype/testing, setInsecure() enables TLS encryption
+// without strict certificate validation.
+// This keeps implementation simple and avoids breaking existing logic.
+void initMQTTSecurity() {
+  espClient.setInsecure();
+  Serial.println("[SECURITY ADDED] TLS enabled for MQTT (prototype mode)");
+}
 
 // Publish the raw UART message as the heartbeat value (1 = alive)
 // and also forward the original message string as a separate field
@@ -58,6 +68,11 @@ bool connWiFi(const char* ssid, const char* password) {
 
   Serial.printf("\nConnected to \"%s\", IP: ", ssid);
   Serial.println(WiFi.localIP());
+
+  // [SECURITY ADDED]
+  // Initialize TLS only after WiFi is connected
+  initMQTTSecurity();
+
   return true;
 }
 
