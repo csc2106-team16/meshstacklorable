@@ -84,6 +84,15 @@ void receivePeerData() {
   String encryptedPayload = String(incoming->payload);
   String decryptedPayload = xorCipher(encryptedPayload);
 
+  // [SECURITY TEST] Show encrypted vs decrypted
+  Serial.println(F("------ SECURITY TEST (RECEIVER) ------"));
+  Serial.print(F("Encrypted: "));
+  Serial.println(encryptedPayload);
+
+  Serial.print(F("Decrypted: "));
+  Serial.println(decryptedPayload);
+  Serial.println(F("-------------------------------------"));
+
   // [SECURITY ADDED] overwrite payload with decrypted text
   strncpy(incoming->payload, decryptedPayload.c_str(), sizeof(incoming->payload) - 1);
   incoming->payload[sizeof(incoming->payload) - 1] = '\0';

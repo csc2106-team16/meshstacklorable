@@ -260,6 +260,16 @@ void sendLoRa(int rawValue, bool isAlert) {
   String originalPayload = String(msg.payload);
   String encryptedPayload = xorCipher(originalPayload);
 
+  // [SECURITY TEST] Show plaintext vs encrypted
+  Serial.println(F("------ SECURITY TEST (SENDER) ------"));
+  Serial.print(F("Plain: "));
+  Serial.println(originalPayload);
+
+  Serial.print(F("Encrypted: "));
+  Serial.println(encryptedPayload);
+  Serial.println(F("-----------------------------------"));
+  Serial.println(F("[INFO] Encrypted packet sent over LoRa"));
+
   // [SECURITY ADDED] safe copy with null termination
   strncpy(msg.payload, encryptedPayload.c_str(), sizeof(msg.payload) - 1);
   msg.payload[sizeof(msg.payload) - 1] = '\0';
