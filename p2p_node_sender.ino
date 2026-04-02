@@ -16,6 +16,25 @@
 #include <RH_RF95.h>
 #include <SoftwareSerial.h>
 
+// [SECURITY ADDED] --- LoRa lightweight security setup ---
+const uint8_t LORA_KEY = 0x5A;
+uint16_t packetCounter = 0;
+
+String xorCipher(const String& input) {
+  String out = input;
+  for (size_t i = 0; i < out.length(); i++) {
+    out[i] = out[i] ^ LORA_KEY;
+  }
+  return out;
+}
+
+uint8_t simpleChecksum(const String& input) {
+  uint8_t sum = 0;
+  for (size_t i = 0; i < input.length(); i++) {
+    sum ^= (uint8_t)input[i];
+  }
+  return sum;
+}
 // ---------------------------------------------------------------
 // NODE IDENTITY — change this for each sender node (1 or 2)
 // ---------------------------------------------------------------
@@ -171,9 +190,20 @@ void sendLoRa(int rawValue, bool isAlert) {
            voltStr,
            isAlert ? "ALERT" : "CLEAR");
 
-  msg.checksum = calculateChecksum(&msg);
+  // [SECURITY ADDED] encrypt payload BEFORE sending
+String originalPayload = String(msg.payload);
+String encryptedPayload = xorCipher(originalPayload);
 
-  rf95.send((uint8_t*)&msg, sizeof(msg));
+// [SECURITY ADDED] safe copy with null termination
+strncpy(msg.payload, encryptedPayload.c_str(), sizeof(msg.payload) - 1);
+msg.payload[sizeof(msg.payload) - 1] = '\0';
+
+// [SECURITY ADDED] recompute checksum AFTER encryption
+msg.checksum = calculateChecksum(&msg);
+
+// send as usual (logic unchanged)
+rf95.send((uint8_t*)&msg, sizeof(msg));
+
   rf95.waitPacketSent();
 
   Serial.println(F("--- [TX] Transmitted ---"));

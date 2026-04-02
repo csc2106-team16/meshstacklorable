@@ -1,6 +1,17 @@
 #include <SPI.h>
 #include <RH_RF95.h>
 
+// [SECURITY ADDED] --- LoRa lightweight security setup ---
+const uint8_t LORA_KEY = 0x5A;
+
+String xorCipher(const String& input) {
+  String out = input;
+  for (size_t i = 0; i < out.length(); i++) {
+    out[i] = out[i] ^ LORA_KEY;
+  }
+  return out;
+}
+
 // NODE IDENTITY — change this for each node (1 to 5)
 #define MY_NODE_ID   3        // Change to 3, 4, or 5 for receiver nodes
 
@@ -68,6 +79,14 @@ void receivePeerData() {
     Serial.println(F("[ERROR] Checksum mismatch — packet dropped."));
     return;
   }
+
+  // [SECURITY ADDED] decrypt payload AFTER checksum verification
+  String encryptedPayload = String(incoming->payload);
+  String decryptedPayload = xorCipher(encryptedPayload);
+
+  // [SECURITY ADDED] overwrite payload with decrypted text
+  strncpy(incoming->payload, decryptedPayload.c_str(), sizeof(incoming->payload) - 1);
+  incoming->payload[sizeof(incoming->payload) - 1] = '\0';
 
   // Parse payload: "N<id>,R<raw>,V<voltage>,<OK|ALERT>"
   char payloadCopy[40];
