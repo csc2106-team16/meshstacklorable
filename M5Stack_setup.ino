@@ -56,7 +56,7 @@ void setup() {
 
   wifiConnected = connWiFi(ssid, password);
   lastWiFiState = wifiConnected;
-  client.setServer(mqtt_server, 1883);
+  client.setServer(mqtt_server, 8883);
 
   updateDisplay("System Ready", "");
   Serial.println("System Ready");

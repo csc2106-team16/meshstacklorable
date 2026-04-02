@@ -2,7 +2,7 @@
 #include <Arduino.h>
 
 // Single definition of shared clients — declared extern in gateway.h
-WiFiClient  espClient;
+WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
 #define TOKEN        "BBUS-Vzhx7378QAwzAIw3wyaYi5UAS5rN5h"
@@ -14,6 +14,12 @@ const  long          reconnInterval    = 5000;
 
 static char payload[150];
 static char topic_pub[100];
+
+void initMQTTSecurity() {
+  // Prototype mode: keep TLS encryption without cert pinning changes.
+  espClient.setInsecure();
+  Serial.println("TLS enabled for MQTT (prototype mode)");
+}
 
 // Publish the raw UART message as the heartbeat value (1 = alive)
 // and also forward the original message string as a separate field
@@ -58,6 +64,7 @@ bool connWiFi(const char* ssid, const char* password) {
 
   Serial.printf("\nConnected to \"%s\", IP: ", ssid);
   Serial.println(WiFi.localIP());
+  initMQTTSecurity();
   return true;
 }
 
