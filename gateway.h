@@ -3,6 +3,10 @@
 #ifndef GATEWAY_H
 #define GATEWAY_H
 
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 

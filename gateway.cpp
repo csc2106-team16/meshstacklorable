@@ -6,8 +6,8 @@ WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
 #define TOKEN        "BBUS-Vzhx7378QAwzAIw3wyaYi5UAS5rN5h"
-#define DEVICE_LABEL "m5stackcplus"
-#define VARIABLE_LABEL "heartbeat"
+#define DEVICE_LABEL "m5stickcplus_gateway"
+#define VARIABLE_LABEL "heartbeat_1"
 
 static unsigned long lastReconnAttempt = 0;
 const  long          reconnInterval    = 5000;
