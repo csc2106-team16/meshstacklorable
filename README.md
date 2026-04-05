@@ -1,365 +1,370 @@
-# LoRa → WiFi Gateway using Arduino UNO and M5StickC Plus
-
+# LoRa Mesh + WiFi/MQTT + BLE — Air Quality Monitoring Gateway
+ 
 ## Overview
-
-This project implements a **hybrid IoT gateway** that bridges **LoRa communication to WiFi over MQTT**.
-
+ 
+This project implements a **multi-protocol IoT air quality monitoring system** with automatic network failover. Each node combines three wireless technologies to ensure reliable smoke detection data delivery.
+ 
 The system uses:
-
-* **Arduino UNO + LoRa Shield** → Handles long-range LoRa communication.
-* **M5StickC Plus (ESP32)** → Acts as a WiFi gateway that publishes messages to the internet using **MQTT (Ubidots)**.
+ 
+* **Arduino UNO + LoRa Shield (Cytron SHIELD-LORA-RFM)** → Handles long-range LoRa mesh communication with flooding-based relay.
+* **M5StickC Plus (ESP32)** → Acts as a WiFi/MQTT gateway, BLE broadcaster, and mode controller.
+* **MQ2 Smoke Sensor** → Detects smoke/gas levels on sender nodes.
 * **UART serial communication** between the Arduino and the ESP32.
-
-This architecture allows the system to:
-
-* Use **WiFi when available**
-* Fall back to **LoRa communication when WiFi is unavailable**
-
+* **TLS-encrypted MQTT** to Ubidots IoT Cloud.
+ 
+The architecture provides **triple-layer redundancy**:
+ 
+1. **WiFi/MQTT** — Primary path. Sensor data is published to Ubidots cloud over TLS.
+2. **LoRa Mesh** — Automatic fallback when WiFi drops. Flooding mesh with multi-hop relay.
+3. **BLE Advertising** — Always-on local broadcast for nearby listeners.
+ 
 ---
-
-# System Architecture
-
+ 
+## System Architecture
+ 
 ```
-LoRa Network
-      │
-      ▼
-Arduino UNO + LoRa Shield
-      │
-UART Serial (SoftwareSerial)
-      │
-      ▼
-M5StickC Plus (ESP32)
-      │
-WiFi
-      │
-MQTT
-      │
-      ▼
-Ubidots Cloud
+                     ┌────────────────────────┐
+                     │     Ubidots Cloud       │
+                     │   (MQTT over TLS)       │
+                     └──────────▲─────────────┘
+                                │
+                         WiFi / MQTT
+                                │
+┌───────────────────────────────┼───────────────────────────────┐
+│  NODE 1 (Sender)              │         NODE 2 (Receiver)     │
+│                               │                               │
+│  ┌─────────────┐    UART    ┌─┴───────────┐    UART    ┌─────────────┐
+│  │ Arduino UNO │◄──────────►│ M5StickC    │    │       │ M5StickC    │◄──────────►│ Arduino UNO │
+│  │ + LoRa      │            │ Plus        │    │       │ Plus        │            │ + LoRa      │
+│  │ + MQ2 Sensor│            │ (Gateway)   │    │       │ (Gateway)   │            │ (Relay only)│
+│  └──────┬──────┘            └──────┬──────┘    │       └──────┬──────┘            └──────┬──────┘
+│         │                          │           │              │                          │
+│         │    LoRa 915.5 MHz        │           │              │                          │
+│         ◄──────────────────────────┼───────────┼──────────────┼──────────────────────────►
+│                                    │           │              │
+│                               BLE Advert  BLE Advert
+│                                    │           │              │
+└───────────────────────────────────────────────────────────────┘
 ```
-
+ 
 ---
-
-# Hardware Components
-
-* Arduino UNO
-* LoRa Shield
-* M5StickC Plus (ESP32)
-* 2 × 470Ω resistors (voltage divider)
+ 
+## Hardware Components
+ 
+* Arduino UNO (×2)
+* Cytron SHIELD-LORA-RFM N1AQ4 LoRa Shield (×2)
+* M5StickC Plus ESP32 (×2)
+* MQ2 Smoke/Gas Sensor (on sender node)
 * Jumper wires
-* USB cables
-
+* USB cables for power
+ 
 ---
-
-# Pin Connections
-
-## Arduino UNO ↔ M5StickC Plus
-
-| Device        | Pin    | Function      |
-| ------------- | ------ | ------------- |
-| Arduino UNO   | Pin 9  | TX (Transmit) |
-| Arduino UNO   | Pin 8  | RX (Receive)  |
-| M5StickC Plus | GPIO32 | RX            |
-| M5StickC Plus | GPIO33 | TX            |
-| Arduino UNO   | GND    | Ground        |
-| M5StickC Plus | GND    | Ground        |
-
-### Serial Wiring Rule
-
+ 
+## File Structure
+ 
+| File | Device | Role |
+| --- | --- | --- |
+| `p2p_node_sender_mesh.ino` | Arduino UNO (Node 1) | Reads MQ2 sensor, originates LoRa mesh packets, forwards data to M5Stick via UART |
+| `p2p_node_receiver_mesh.ino` | Arduino UNO (Node 2) | Receives and relays LoRa mesh packets, forwards data to M5Stick via UART |
+| `m5stick_integrated_sender.ino` | M5StickC Plus (Node 1) | WiFi/MQTT publisher, BLE broadcaster, LoRa mode controller for sender |
+| `m5stick_receiver.ino` | M5StickC Plus (Node 2) | WiFi/MQTT subscriber, BLE broadcaster, LoRa mode controller for receiver |
+| `gateway.h` / `gateway.cpp` | M5StickC Plus (shared) | TLS MQTT client library — WiFi connection, MQTT publish, Ubidots integration |
+ 
+---
+ 
+## Pin Connections
+ 
+### Arduino UNO ↔ M5StickC Plus (UART)
+ 
+| Device | Pin | Function |
+| --- | --- | --- |
+| Arduino UNO | Pin 4 | TX (SoftwareSerial) |
+| Arduino UNO | Pin 5 | RX (SoftwareSerial) |
+| M5StickC Plus | GPIO 32 (Grove RX) | RX |
+| M5StickC Plus | GPIO 33 (Grove TX) | TX |
+| Both | GND | Common ground |
+ 
 Serial communication must be **crossed**:
-
+ 
 ```
-Arduino TX → ESP32 RX
-Arduino RX ← ESP32 TX
-```
-
-### Actual Wiring
-
-```
-Arduino Pin 9 (TX) → Voltage Divider → GPIO32 (ESP32 RX)
-Arduino Pin 8 (RX) ← GPIO33 (ESP32 TX)
+Arduino Pin 4 (TX) → M5StickC Plus GPIO 32 (RX)
+Arduino Pin 5 (RX) ← M5StickC Plus GPIO 33 (TX)
 GND ↔ GND
 ```
-
+ 
+### Arduino UNO — LoRa Shield Pins
+ 
+| Pin | Function |
+| --- | --- |
+| 10 | RFM95 Chip Select (CS) |
+| 9 | RFM95 Reset (RST) |
+| 2 | RFM95 Interrupt (INT) |
+| A0 | MQ2 Smoke Sensor analog input (sender only) |
+ 
 ---
-
-# Voltage Level Protection
-
-The Arduino UNO operates at **5V logic**, while the ESP32 operates at **3.3V logic**.
-
-Directly connecting the Arduino TX pin to the ESP32 RX pin may damage the ESP32.
-
-To prevent this, a **voltage divider** is used.
-
-Example using two 470Ω resistors:
-
-```
-Arduino TX
-     |
-   470Ω
-     |
-     +-----> GPIO32 (ESP32 RX)
-     |
-   470Ω
-     |
-    GND
-```
-
-This reduces the signal from **5V → ~2.5V**, which is still recognized as HIGH by the ESP32.
-
----
-
-# Why SoftwareSerial Is Used
-
-The Arduino UNO has **only one hardware serial port**.
-
-```
-Pin 0 → RX
-Pin 1 → TX
-```
-
-These pins are already used for:
-
-* USB communication
-* Serial Monitor debugging
-* Uploading sketches
-
-If we used pins **0 and 1** for the ESP32 connection:
-
-* Code uploads would fail
-* Serial Monitor debugging would break
-* Conflicts would occur during communication
-
-To solve this problem, we use **SoftwareSerial**, which allows serial communication on other pins.
-
-Example used in this project:
-
-```
-Pin 8 → RX
-Pin 9 → TX
-```
-
-This allows:
-
-* Arduino ↔ ESP32 communication
-* Serial Monitor debugging to continue working
-
----
-
-# Arduino Code Concept
-
-The Arduino performs two tasks:
-
-1. Receive LoRa messages
-2. Forward messages to the ESP32 via UART
-
-Example concept:
-
-```cpp
-#include <SoftwareSerial.h>
-
-SoftwareSerial espSerial(8, 9);
-
-void setup() {
-  Serial.begin(9600);
-  espSerial.begin(9600);
-}
-
-void loop() {
-  if (espSerial.available()) {
-    String msg = espSerial.readStringUntil('\n');
-    Serial.println(msg);
-  }
-}
-```
-
----
-
-# M5StickC Plus Role
-
-The M5StickC Plus acts as the **Internet gateway**.
-
-It performs the following functions:
-
-1. Connect to WiFi
-2. Connect to MQTT broker (Ubidots)
-3. Receive UART data from Arduino
-4. Convert messages to JSON
-5. Publish messages to MQTT
-
----
-
-# MQTT Message Format
-
-Messages are sent to Ubidots in JSON format.
-
-Example:
-
-```
+ 
+## Communication Protocols
+ 
+### UART Command Protocol (M5Stick ↔ Arduino)
+ 
+**M5Stick → Arduino (commands):**
+ 
+| Command | Effect |
+| --- | --- |
+| `LORA,ON\n` | Enable LoRa TX/RX on Arduino |
+| `LORA,OFF\n` | Disable LoRa TX/RX on Arduino |
+ 
+**Arduino → M5Stick (data):**
+ 
+| Message | Meaning |
+| --- | --- |
+| `READY,<id>\n` | Arduino initialized, reports node ID |
+| `N<id>,R<raw>,V<voltage>,<ALERT\|CLEAR>\n` | Sensor reading or relayed LoRa data |
+ 
+Example data message: `N1,R245,V1.20,ALERT`
+ 
+### LoRa Mesh Protocol
+ 
+The system uses a **flooding mesh** topology. Every node that receives a packet rebroadcasts it (with decremented TTL) so messages can reach nodes beyond direct radio range.
+ 
+**Mesh packet structure:**
+ 
+| Field | Type | Description |
+| --- | --- | --- |
+| `originId` | uint8 | Node that originated the message |
+| `lastHopId` | uint8 | Node that last relayed the message |
+| `msgId` | uint16 | Sequence number from origin node |
+| `ttl` | uint8 | Time-to-live (default 3 hops) |
+| `payload` | char[40] | XOR-encrypted sensor data |
+| `checksum` | uint8 | XOR checksum for integrity |
+ 
+**Mesh features:**
+ 
+* **Deduplication cache** — 16-entry ring buffer prevents rebroadcasting the same packet.
+* **Random relay delay** — 50–200 ms jitter reduces collision probability.
+* **XOR cipher** — Lightweight payload encryption using key `0x5A`.
+* **Checksum validation** — Drops corrupted packets.
+ 
+**Radio settings:** 915.5 MHz, TX power 23 dBm.
+ 
+### MQTT (Ubidots Cloud)
+ 
+Messages are published over **TLS (port 8883)** to `industrial.api.ubidots.com`.
+ 
+**Topics per node:**
+ 
+| Node | Heartbeat Topic | Smoke Sensor Topic |
+| --- | --- | --- |
+| Node 1 (Shafiq) | `/v1.6/devices/m5stick_node1/heartbeat_1` | `/v1.6/devices/m5stick_node1/smokesensor_4` |
+ 
+Heartbeat payload format:
+ 
+```json
 {
-  "heartbeat": 1,
-  "raw": "LoRa message received"
+  "heartbeat_1": 1,
+  "raw": "N1,R245,V1.20,ALERT"
 }
 ```
-
-MQTT topic used (All to use the same TOKEN):
-
-
-
+ 
+Smoke sensor payload format:
+ 
+```json
+{
+  "smokesensor_4": 245
+}
 ```
-Shafiq /v1.6/devices/m5stackcplus_gateway/heartbeat_2
-Natalie /v1.6/devices/m5stackcplus_gateway/heartbeat_3
-Yan Hyee /v1.6/devices/m5stackcplus_gateway/heartbeat_4
-Koel /v1.6/devices/m5stackcplus_gateway/heartbeat_5
-
-Natalie /v1.6/devices/m5stackcplus_gateway/smokesensor_3
-Yan Hyee /v1.6/devices/m5stackcplus_gateway/smokesensor_4
-```
-
+ 
+**Additional team member topics (shared Ubidots token):**
+ 
+| Person | Heartbeat | Smoke Sensor |
+| --- | --- | --- |
+| Shafiq | `heartbeat_2` | — |
+| Natalie | `heartbeat_3` | `smokesensor_3` |
+| Yan Hyee | `heartbeat_4` | `smokesensor_4` |
+| Koel | `heartbeat_5` | — |
+ 
+### BLE Advertising
+ 
+Each M5StickC Plus continuously broadcasts sensor data via BLE manufacturer-specific advertising. This provides a local monitoring channel that works independently of WiFi and LoRa.
+ 
+**BLE device names:** `ENV-NODE-01`, `ENV-NODE-02`
+ 
+**Payload format:** `SMK|<nodeId>|<rawValue>|<voltage>|<ALERT|CLEAR>`
+ 
+Example: `SMK|1|245|1.20|ALERT`
+ 
 ---
-
-# Step-by-Step Setup Guide
-
-## 1 Install Arduino IDE Support
-
-Add M5Stack board manager URL:
-
+ 
+## WiFi/LoRa Automatic Failover
+ 
+The M5StickC Plus manages network mode switching automatically:
+ 
+```
+                    ┌──────────┐
+       Power on ───►│ WiFi Mode│ (primary)
+                    └────┬─────┘
+                         │
+              WiFi down for 5s?
+                         │ YES
+                         ▼
+                    ┌──────────┐
+                    │LoRa Mode │ (fallback)
+                    └────┬─────┘
+                         │
+                   WiFi restored?
+                         │ YES
+                         ▼
+                    ┌──────────┐
+                    │ WiFi Mode│
+                    └──────────┘
+```
+ 
+**Detailed behavior:**
+ 
+1. On startup, WiFi is primary. M5Stick sends `LORA,OFF` to Arduino.
+2. WiFi health is checked every 5 seconds.
+3. If WiFi drops and stays down for 5 seconds, M5Stick switches to LoRa mode and sends `LORA,ON` to Arduino.
+4. Arduino begins LoRa TX (sender) or RX/relay (receiver).
+5. When WiFi reconnects, M5Stick sends `LORA,OFF` and resumes MQTT publishing.
+6. **Sensor data is always sent to M5Stick via UART**, regardless of mode.
+7. **BLE advertising is always active**, regardless of mode.
+ 
+---
+ 
+## Security
+ 
+* **LoRa payload encryption** — XOR cipher with shared key `0x5A`. Lightweight protection suitable for prototype/educational use.
+* **MQTT over TLS** — Connection to Ubidots uses port 8883 with TLS encryption. Certificate verification is relaxed (prototype mode via `setInsecure()`).
+* **Checksum integrity** — Each LoRa mesh packet includes an XOR checksum; corrupted packets are dropped.
+ 
+---
+ 
+## Display Information
+ 
+The M5StickC Plus LCD shows real-time status:
+ 
+**WiFi Mode:**
+ 
+```
+WIFI/MQTT [TX]              BLE:ON
+MY:1                      FROM:2
+       !! ALERT !!
+R:245  V:1.20V
+WiFi:OK  MQTT:OK
+```
+ 
+**LoRa Fallback Mode:**
+ 
+```
+!! LORA FALLBACK !!      WiFi:DOWN
+MY:1                      FROM:2
+       !! ALERT !!
+R:245  V:1.20V
+BLE:ON  LoRa:ACTIVE
+```
+ 
+Screen background changes to **red** on ALERT and **green** on CLEAR.
+ 
+---
+ 
+## MQ2 Smoke Sensor Configuration
+ 
+| Parameter | Value |
+| --- | --- |
+| Analog pin | A0 |
+| Warmup time | 30 seconds |
+| Smoke threshold | Raw ADC ≥ 100 |
+| Sample interval | 1 second |
+| Alert repeat interval | 5 seconds |
+| All-clear repeat interval | 10 seconds |
+ 
+---
+ 
+## Setup Guide
+ 
+### 1. Install Arduino IDE Board Support
+ 
+Add the M5Stack board manager URL in Arduino IDE preferences:
+ 
 ```
 https://static-cdn.m5stack.com/resource/arduino/package_m5stack_index.json
 ```
-
-Then install:
-
+ 
+Then install **M5Stack** from Boards Manager.
+ 
+### 2. Install Required Libraries
+ 
+From Library Manager, install:
+ 
+* **M5StickCPlus** — Display and hardware control
+* **PubSubClient** — MQTT client
+* **NimBLE-Arduino** — BLE advertising
+* **RadioHead** — LoRa radio driver (RH_RF95)
+ 
+WiFi and SPI libraries are included with ESP32 and Arduino cores.
+ 
+### 3. Configure Node Identity
+ 
+Before uploading, edit the `#define` values in each sketch:
+ 
+**Arduino sketches** — set `MY_NODE_ID` (must be unique per node).
+ 
+**M5Stick sketches** — set `MY_NODE_ID`, `BLE_DEVICE_NAME`, `WIFI_SSID`, and `WIFI_PASSWORD`.
+ 
+**Gateway library** — set `DEVICE_LABEL` and `HEARTBEAT_KEY` in `gateway.cpp` to match your Ubidots device.
+ 
+### 4. Upload Code
+ 
+**For M5StickC Plus:**
+ 
+1. Connect via USB.
+2. Select board: `Tools → Board → M5Stick-CPlus`
+3. Place `gateway.h` and `gateway.cpp` in the same folder as the `.ino` file.
+4. Upload.
+ 
+**For Arduino UNO:**
+ 
+1. Connect via USB.
+2. Select board: `Tools → Board → Arduino UNO`
+3. Upload the appropriate sender or receiver sketch.
+ 
+### 5. Wire UART Connections
+ 
+After uploading to both devices, connect UART wires between each Arduino–M5Stick pair:
+ 
 ```
-Boards Manager → M5Stack
-```
-
----
-
-## 2 Install Required Libraries
-
-From **Library Manager** install:
-
-* PubSubClient
-* ArduinoJson
-* M5StickCPlus
-
-WiFi library is already included with ESP32.
-
----
-
-## 3 Upload ESP32 Code
-
-1. Connect M5StickC Plus via USB
-2. Select board:
-
-```
-Tools → Board → M5Stick-CPlus
-```
-
-3. Upload the gateway code.
-
----
-
-## 4 Upload Arduino Code
-
-1. Select board:
-
-```
-Tools → Board → Arduino UNO
-```
-
-2. Upload the LoRa communication sketch.
-
----
-
-## 5 Perform Wiring
-
-After uploading code to both devices:
-
-Connect UART wires:
-
-```
-Arduino TX → ESP32 RX
-Arduino RX ← ESP32 TX
+Arduino Pin 4 (TX) → M5StickC Plus GPIO 32 (RX)
+Arduino Pin 5 (RX) ← M5StickC Plus GPIO 33 (TX)
 GND ↔ GND
 ```
-
+ 
+### 6. Power and Verify
+ 
+Power both devices via USB. The M5StickC Plus will display WiFi/MQTT connection status on its LCD screen. The Arduino Serial Monitor (9600 baud) shows LoRa and sensor activity.
+ 
 ---
-
-## 6 Power Both Devices
-
-Power both devices using USB.
-
-The M5StickC Plus will:
-
-* connect to WiFi
-* connect to MQTT
-* display status on the LCD screen.
-
+ 
+## Key Technologies
+ 
+| Technology | Purpose |
+| --- | --- |
+| LoRa 915.5 MHz | Long-range fallback communication |
+| Flooding Mesh | Multi-hop packet relay without routing tables |
+| ESP32 WiFi | Primary internet connectivity |
+| MQTT over TLS | Secure IoT cloud messaging (Ubidots) |
+| BLE Advertising | Always-on local data broadcast |
+| UART (SoftwareSerial) | Arduino ↔ M5Stick bidirectional link |
+| XOR Cipher | Lightweight LoRa payload encryption |
+| JSON | Structured MQTT message format |
+ 
 ---
-
-# Display Information
-
-The M5StickC Plus screen shows:
-
-```
-WiFi : OK / FAIL
-MQTT : OK / --
-Last message received
-```
-
-This helps with debugging.
-
----
-
-# Fallback Logic
-
-If WiFi fails:
-
-1. ESP32 detects WiFi disconnection
-2. ESP32 sends `"WIFI_DOWN"` to Arduino
-3. Arduino continues LoRa communication
-
-This ensures **network redundancy**.
-
----
-
-# Key Technologies Used
-
-* LoRa
-* ESP32 WiFi
-* MQTT protocol
-* UART Serial Communication
-* JSON message formatting
-* Ubidots IoT Cloud
-
----
-
-# Key Concepts
-
-| Concept         | Purpose                                 |
-| --------------- | --------------------------------------- |
-| SoftwareSerial  | Avoids using Arduino pins 0 and 1       |
-| UART            | Communication between Arduino and ESP32 |
-| WiFi            | Internet connectivity                   |
-| MQTT            | Lightweight IoT messaging protocol      |
-| JSON            | Structured data format                  |
-| Voltage Divider | Protect ESP32 from 5V signals           |
-
----
-
-# Summary (Simple Explanation)
-
-The system works like this:
-
-1. LoRa messages arrive at the Arduino.
-2. Arduino sends the message to the M5StickC Plus.
-3. The M5StickC Plus connects to WiFi.
-4. The message is published to the cloud using MQTT.
-
-If WiFi stops working, the system continues using **LoRa communication**.
-
-This creates a **reliable IoT gateway with wireless redundancy**.
-
----
+ 
+## Summary
+ 
+The system creates a **resilient IoT smoke detection network** with three independent communication layers:
+ 
+1. **WiFi/MQTT** publishes sensor data to the cloud in real time.
+2. **LoRa mesh** kicks in automatically when WiFi fails, relaying alerts across multiple hops.
+3. **BLE** broadcasts locally at all times for nearby monitoring devices.
+ 
+Each node pair (Arduino + M5StickC Plus) operates autonomously, with the M5Stick managing mode switching and the Arduino handling sensor reading and LoRa radio operations. This architecture ensures that smoke alerts are delivered reliably even when internet connectivity is lost.
